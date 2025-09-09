@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="uz">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>TaxiJet — Yandex Map Picker</title>
+
+  <!-- Yandex Maps JS API v3 (kalitingizni qo'ying) -->
+  <script src="https://api-maps.yandex.ru/v3/?apikey=d5170bd4-4324-49c3-bc1c-be7e877a6a47"></script>
+  <!-- Telegram WebApp JS -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+  <style>
+    :root { --bg: #fff; --text:#111; --muted:#666; --chip:#f3f3f3; --btn:#1a73e8; --btnText:#fff; }
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; }
+    .panel {
+      position: fixed; inset: 10px 10px auto 10px;
+      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+      background: rgba(255,255,255,.95); color: var(--text);
+      padding: 8px; border-radius: 12px; z-index: 1000;
+      box-shadow: 0 6px 24px rgba(0,0,0,.12);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    .chip { background: var(--chip); padding: 6px 10px; border-radius: 10px; font-size: 12px; }
+    .hint { font-size: 12px; color: var(--muted); margin-right: 6px; }
+    .btn { border: 0; border-radius: 10px; padding: 8px 12px; cursor: pointer; font-weight: 600; }
+    .btn.save { background: var(--btn); color: var(--btnText); }
+    .btn.reset { background: #eee; color: #000; }
+    .fab {
+      position: fixed; right: 14px; bottom: 14px; z-index: 1000;
+      width: 44px; height: 44px; border-radius: 50%;
+      background: #fff; border: 1px solid #ddd; box-shadow: 0 4px 16px rgba(0,0,0,.15);
+      display: grid; place-items: center; cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <!-- Yuqori boshqaruv paneli -->
+  <div class="panel">
+    <span class="hint">Xaritada ketma-ket bosib tanlang: <b>FROM</b> → <b>TO</b></span>
+    <span id="fromChip" class="chip">FROM: —</span>
+    <span id="toChip" class="chip">TO: —</span>
+    <button id="resetBtn" class="btn reset" type="button">Qayta tanlash</button>
+    <button id="saveBtn" class="btn save" type="button" disabled>Saqlash</button>
+  </div>
+
+  <!-- Xaritani markazga qaytarish / geolokatsiya -->
+  <button id="geoBtn" class="fab" title="Joriy joylashuv">
+    📍
+  </button>
+
+  <!-- Xarita -->
+  <div id="map"></div>
+
+  <script>
+    // Telegram WebApp
+    const tg = window.Telegram?.WebApp;
+    try { tg?.expand(); } catch(_) {}
+
+    // UI elementlar
+    const fromChip = document.getElementById('fromChip');
+    const toChip   = document.getElementById('toChip');
+    const resetBtn = document.getElementById('resetBtn');
+    const saveBtn  = document.getElementById('saveBtn');
+    const geoBtn   = document.getElementById('geoBtn');
+
+    // Holat
+    let ymaps3, map, YMap, YMapDefaultSchemeLayer, YMapDefaultFeaturesLayer, YMapMarker, YMapPolyline;
+    let fromPoint = null, toPoint = null;
+    let fromMark = null, toMark = null, routeLine = null;
+
+    function setChip(el, pt) {
+      el.textContent = pt
+        ? `${el.id.startsWith('from')?'FROM':'TO'}: ${pt.lat.toFixed(5)}, ${pt.lon.toFixed(5)}`
+        : (el.id.startsWith('from') ? 'FROM: —' : 'TO: —');
+    }
+
+    function mkDot(color) {
+      const el = document.createElement('div');
+      el.style.width = '14px';
+      el.style.height = '14px';
+      el.style.borderRadius = '50%';
+      el.style.background = color;
+      el.style.border = '2px solid white';
+      el.style.boxShadow = '0 0 0 2px rgba(0,0,0,.2)';
+      return el;
+    }
+
+    function clearRoute() {
+      try { if (routeLine) map.removeChild(routeLine); } catch(_) {}
+      routeLine = null;
+    }
+
+    function drawRoute() {
+      if (!fromPoint || !toPoint || !YMapPolyline) return;
+      clearRoute();
+      const coords = [
+        [fromPoint.lon, fromPoint.lat],
+        [toPoint.lon, toPoint.lat]
+      ];
+      routeLine = new YMapPolyline({ coordinates: coords }, {
+        strokeColor: '#1a73e8',
+        strokeWidth: 4,
+        strokeOpacity: 0.9
+      });
+      map.addChild(routeLine);
+    }
+
+    function fitBounds() {
+      if (!fromPoint && !toPoint) return;
+      const pts = [];
+      if (fromPoint) pts.push([fromPoint.lon, fromPoint.lat]);
+      if (toPoint) pts.push([toPoint.lon, toPoint.lat]);
+      if (pts.length === 1) {
+        map.setLocation({ center: pts[0], zoom: 14, duration: 300 });
+      } else {
+        // Oddiy bbox
+        const lons = pts.map(p=>p[0]), lats = pts.map(p=>p[1]);
+        const bbox = [[Math.min(...lons), Math.min(...lats)], [Math.max(...lons), Math.max(...lats)]];
+        const center = [(bbox[0][0]+bbox[1][0])/2, (bbox[0][1]+bbox[1][1])/2];
+        map.setLocation({ center, zoom: 12, duration: 300 });
+      }
+    }
+
+    function resetAll() {
+      try { if (fromMark) map.removeChild(fromMark); } catch(_) {}
+      try { if (toMark) map.removeChild(toMark); } catch(_) {}
+      clearRoute();
+      fromPoint = toPoint = null;
+      fromMark = toMark = null;
+      setChip(fromChip, null);
+      setChip(toChip, null);
+      saveBtn.disabled = true;
+    }
+
+    async function initMap() {
+      // Yandex v3 modullarini yuklash
+      ymaps3 = await ymaps3.ready;
+      ({ YMap, YMapDefaultSchemeLayer, YMapDefaultFeaturesLayer, YMapMarker } = ymaps3);
+      // Polyline (yo'nalish chizig'i) moduli
+      try { ({ YMapPolyline } = ymaps3); } catch(_) {}
+
+      // URL query bilan markaz berish (ixtiyoriy)
+      const params = new URLSearchParams(location.search);
+      const lat = parseFloat(params.get('lat') || '41.2995');   // Toshkent default
+      const lon = parseFloat(params.get('lon') || '69.2401');
+      const zoom = parseInt(params.get('z') || '11', 10);
+
+      map = new YMap(document.getElementById('map'), {
+        location: { center: [lon, lat], zoom }
+      });
+      map.addChild(new YMapDefaultSchemeLayer());
+      map.addChild(new YMapDefaultFeaturesLayer());
+
+      // Xarita kliklari: FROM -> TO
+      map.addListener(map, 'click', (e) => {
+        const [lon, lat] = e.coordinates; // v3: [lon, lat]
+        if (!fromPoint) {
+          fromPoint = { lat, lon };
+          fromMark = new YMapMarker({ coordinates: [lon, lat] }, mkDot('green'));
+          map.addChild(fromMark);
+          setChip(fromChip, fromPoint);
+        } else if (!toPoint) {
+          toPoint = { lat, lon };
+          toMark = new YMapMarker({ coordinates: [lon, lat] }, mkDot('red'));
+          map.addChild(toMark);
+          setChip(toChip, toPoint);
+          saveBtn.disabled = false;
+          drawRoute();
+          fitBounds();
+        }
+      });
+
+      // Tugmalar
+      resetBtn.onclick = () => resetAll();
+      saveBtn.onclick  = () => {
+        if (!fromPoint || !toPoint) return;
+        const payload = { from: fromPoint, to: toPoint, provider: 'yandex' };
+        try { tg?.sendData(JSON.stringify(payload)); } catch(_) {}
+        try { tg?.close(); } catch(_) {}
+      };
+
+      geoBtn.onclick = () => {
+        if (!navigator.geolocation) return;
+        navigator.geolocation.getCurrentPosition(
+          (pos) => {
+            const { latitude, longitude } = pos.coords;
+            map.setLocation({ center: [longitude, latitude], zoom: 14, duration: 300 });
+          },
+          () => { /* e'tiborsiz */ },
+          { enableHighAccuracy: true, timeout: 5000 }
+        );
+      };
+    }
+
+    initMap();
+  </script>
+</body>
+</html>
