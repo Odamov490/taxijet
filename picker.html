@@ -3,53 +3,113 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>TaxiJet — Yandex Map Picker (test)</title>
+  <title>TaxiJet — Map Picker (Leaflet)</title>
 
-  <!-- Yandex Maps v3: o'zingizning KEY -->
-  <script src="https://api-maps.yandex.ru/v3/?apikey=7d36a2ff-aab5-4c09-8396-3ec8711058ca&lang=uz_UZ"></script>
+  <!-- Leaflet -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+
+  <!-- Telegram WebApp -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
 
   <style>
-    html, body { height:100%; margin:0 }
-    #map { height:100% }
-    .log {
-      position: fixed; left: 8px; bottom: 8px; right: 8px;
-      background: rgba(0,0,0,.7); color: #fff; font: 12px/1.4 monospace;
-      padding: 8px; border-radius: 8px; max-height: 40%; overflow:auto; z-index: 9999;
-    }
+    :root{--muted:#666;--chip:#f3f3f3;--btn:#1a73e8;--btnText:#fff}
+    html,body{height:100%;margin:0}
+    #map{height:100%}
+    .panel{position:fixed;left:10px;right:10px;top:10px;z-index:1000;background:#fffcc;border-radius:12px;
+           box-shadow:0 6px 24px rgba(0,0,0,.12);padding:8px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;
+           font:14px/1.2 system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;background:rgba(255,255,255,.95)}
+    .chip{background:var(--chip);padding:6px 10px;border-radius:10px;font-size:12px}
+    .hint{font-size:12px;color:var(--muted);margin-right:6px}
+    .btn{border:0;border-radius:10px;padding:8px 12px;cursor:pointer;font-weight:600}
+    .btn.save{background:var(--btn);color:var(--btnText)}
+    .btn.reset{background:#eee;color:#000}
+    .fab{position:fixed;right:14px;bottom:14px;z-index:1000;width:44px;height:44px;border-radius:50%;
+         background:#fff;border:1px solid #ddd;box-shadow:0 4px 16px rgba(0,0,0,.15);display:grid;place-items:center;cursor:pointer}
   </style>
 </head>
 <body>
+  <div class="panel">
+    <span class="hint">Xaritada ketma-ket tanlang: <b>FROM</b> → <b>TO</b></span>
+    <span id="fromChip" class="chip">FROM: —</span>
+    <span id="toChip" class="chip">TO: —</span>
+    <button id="resetBtn" class="btn reset" type="button">Qayta tanlash</button>
+    <button id="saveBtn" class="btn save" type="button" disabled>Saqlash</button>
+  </div>
+  <button id="geoBtn" class="fab" title="Joriy joylashuv">📍</button>
   <div id="map"></div>
-  <pre id="log" class="log"></pre>
 
   <script>
-    const log = (...a) => {
-      const el = document.getElementById('log');
-      el.textContent += a.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ') + '\n';
-    };
+    const tg = window.Telegram?.WebApp; try{tg?.expand()}catch(_){}
+    const fromChip=document.getElementById('fromChip');
+    const toChip=document.getElementById('toChip');
+    const resetBtn=document.getElementById('resetBtn');
+    const saveBtn=document.getElementById('saveBtn');
+    const geoBtn=document.getElementById('geoBtn');
 
-    // 1) Skript yuklandimi?
-    if (!window.ymaps3) {
-      log('❌ ymaps3 yo‘q — script yuklanmadi (kalit yoki referrer muammo).');
-    } else {
-      log('✅ ymaps3 mavjud, init boshlanmoqda...');
+    let map, fromPoint=null, toPoint=null, fromMarker=null, toMarker=null, routeLine=null;
+
+    function setChip(el, pt){
+      el.textContent = pt ? `${el.id.startsWith('from')?'FROM':'TO'}: ${pt.lat.toFixed(5)}, ${pt.lon.toFixed(5)}`
+                          : (el.id.startsWith('from')?'FROM: —':'TO: —');
+    }
+    function resetAll(){
+      if(fromMarker){ map.removeLayer(fromMarker); fromMarker=null }
+      if(toMarker){ map.removeLayer(toMarker); toMarker=null }
+      if(routeLine){ map.removeLayer(routeLine); routeLine=null }
+      fromPoint=toPoint=null; setChip(fromChip,null); setChip(toChip,null); saveBtn.disabled=true;
     }
 
-    // 2) Init + xarita
-    (async () => {
-      try {
-        await ymaps3.ready;
-        const { YMap, YMapDefaultSchemeLayer, YMapDefaultFeaturesLayer } = ymaps3;
-        const map = new YMap(document.getElementById('map'), {
-          location: { center: [69.2401, 41.2995], zoom: 11 } // Toshkent
-        });
-        map.addChild(new YMapDefaultSchemeLayer());
-        map.addChild(new YMapDefaultFeaturesLayer());
-        log('✅ Xarita yaratildi.');
-      } catch (e) {
-        console.error(e);
-        log('❌ Init xatosi:', e && e.message ? e.message : e);
-      }
+    // Init Leaflet
+    (function init(){
+      const qs=new URLSearchParams(location.search);
+      const lat=parseFloat(qs.get('lat')||'41.2995'); // Toshkent
+      const lon=parseFloat(qs.get('lon')||'69.2401');
+      const zoom=parseInt(qs.get('z')||'12',10);
+
+      map = L.map('map').setView([lat, lon], zoom);
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap contributors'
+      }).addTo(map);
+
+      map.on('click', (e)=>{
+        const {lat, lng} = e.latlng;
+        if(!fromPoint){
+          fromPoint={lat:lat, lon:lng};
+          fromMarker=L.marker([lat,lng],{title:'FROM'}).addTo(map);
+          setChip(fromChip, fromPoint);
+        }else if(!toPoint){
+          toPoint={lat:lat, lon:lng};
+          toMarker=L.marker([lat,lng],{title:'TO'}).addTo(map);
+          setChip(toChip, toPoint);
+          saveBtn.disabled=false;
+
+          if(routeLine) map.removeLayer(routeLine);
+          routeLine=L.polyline([[fromPoint.lat,fromPoint.lon],[toPoint.lat,toPoint.lon]],{weight:4}).addTo(map);
+          map.fitBounds(routeLine.getBounds(),{padding:[40,40]});
+        }
+      });
+
+      resetBtn.onclick=resetAll;
+
+      saveBtn.onclick=()=>{
+        if(!fromPoint||!toPoint) return;
+        const payload={from:fromPoint,to:toPoint,provider:'leaflet-osm'};
+        try{ tg?.sendData(JSON.stringify(payload)); }catch(_){}
+        try{ tg?.close(); }catch(_){}
+      };
+
+      geoBtn.onclick=()=>{
+        if(!navigator.geolocation) return;
+        navigator.geolocation.getCurrentPosition(
+          (pos)=>{
+            const {latitude,longitude}=pos.coords;
+            map.setView([latitude,longitude], 15);
+          },
+          ()=>{}, {enableHighAccuracy:true,timeout:5000}
+        );
+      };
     })();
   </script>
 </body>
