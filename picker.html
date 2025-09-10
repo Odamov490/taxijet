@@ -3,126 +3,54 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>TaxiJet — Yandex Map Picker</title>
+  <title>TaxiJet — Yandex Map Picker (test)</title>
 
-  <!-- Yandex Maps JS API v3 — SIZNING KALITINGIZ -->
+  <!-- Yandex Maps v3: o'zingizning KEY -->
   <script src="https://api-maps.yandex.ru/v3/?apikey=7d36a2ff-aab5-4c09-8396-3ec8711058ca&lang=uz_UZ"></script>
-  <!-- Telegram WebApp JS -->
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
 
   <style>
-    :root { --muted:#666; --chip:#f3f3f3; --btn:#1a73e8; --btnText:#fff; }
-    html, body { height: 100%; margin: 0; }
-    #map { height: 100%; }
-    .panel {
-      position: fixed; inset: 10px 10px auto 10px;
-      display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
-      background: rgba(255,255,255,.95);
-      padding: 8px; border-radius: 12px; z-index: 1000;
-      box-shadow: 0 6px 24px rgba(0,0,0,.12);
-      font: 14px/1.2 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    html, body { height:100%; margin:0 }
+    #map { height:100% }
+    .log {
+      position: fixed; left: 8px; bottom: 8px; right: 8px;
+      background: rgba(0,0,0,.7); color: #fff; font: 12px/1.4 monospace;
+      padding: 8px; border-radius: 8px; max-height: 40%; overflow:auto; z-index: 9999;
     }
-    .chip { background: var(--chip); padding: 6px 10px; border-radius: 10px; font-size: 12px; }
-    .hint { font-size: 12px; color: var(--muted); margin-right: 6px; }
-    .btn { border: 0; border-radius: 10px; padding: 8px 12px; cursor: pointer; font-weight: 600; }
-    .btn.save { background: var(--btn); color: var(--btnText); }
-    .btn.reset { background: #eee; color: #000; }
   </style>
 </head>
 <body>
-  <div class="panel">
-    <span class="hint">Xaritada ketma-ket tanlang: <b>FROM</b> → <b>TO</b></span>
-    <span id="fromChip" class="chip">FROM: —</span>
-    <span id="toChip" class="chip">TO: —</span>
-    <button id="resetBtn" class="btn reset" type="button">Qayta tanlash</button>
-    <button id="saveBtn" class="btn save" type="button" disabled>Saqlash</button>
-  </div>
-
   <div id="map"></div>
+  <pre id="log" class="log"></pre>
 
   <script>
-    const tg = window.Telegram?.WebApp; try { tg?.expand(); } catch(_) {}
+    const log = (...a) => {
+      const el = document.getElementById('log');
+      el.textContent += a.map(x => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ') + '\n';
+    };
 
-    const fromChip = document.getElementById('fromChip');
-    const toChip   = document.getElementById('toChip');
-    const resetBtn = document.getElementById('resetBtn');
-    const saveBtn  = document.getElementById('saveBtn');
-
-    let map, fromPoint=null, toPoint=null, fromMark=null, toMark=null, routeLine=null;
-
-    function setChip(el, pt) {
-      el.textContent = pt
-        ? `${el.id.startsWith('from')?'FROM':'TO'}: ${pt.lat.toFixed(5)}, ${pt.lon.toFixed(5)}`
-        : (el.id.startsWith('from') ? 'FROM: —' : 'TO: —');
-    }
-    function mkDot(color) {
-      const el = document.createElement('div');
-      el.style.cssText = 'width:14px;height:14px;border-radius:50%;border:2px solid #fff;box-shadow:0 0 0 2px rgba(0,0,0,.2);';
-      el.style.background = color;
-      return el;
+    // 1) Skript yuklandimi?
+    if (!window.ymaps3) {
+      log('❌ ymaps3 yo‘q — script yuklanmadi (kalit yoki referrer muammo).');
+    } else {
+      log('✅ ymaps3 mavjud, init boshlanmoqda...');
     }
 
-    async function init() {
-      // ⚠️ To‘g‘ri init: namespace’ni o‘zgartirmaymiz
-      await ymaps3.ready;
-      const {YMap, YMapDefaultSchemeLayer, YMapDefaultFeaturesLayer, YMapMarker, YMapPolyline} = ymaps3;
-
-      // Markaz (Toshkent) yoki URL’dan (?lat=..&lon=..&z=..)
-      const qs = new URLSearchParams(location.search);
-      const lat = parseFloat(qs.get('lat') || '41.2995');
-      const lon = parseFloat(qs.get('lon') || '69.2401');
-      const zoom = parseInt(qs.get('z') || '11', 10);
-
-      map = new YMap(document.getElementById('map'), { location: { center: [lon, lat], zoom } });
-      map.addChild(new YMapDefaultSchemeLayer());
-      map.addChild(new YMapDefaultFeaturesLayer());
-
-      // v3: hodisa tinglashning qulay usuli
-      map.addEventListener('click', (e) => {
-        const [lon, lat] = e.coordinates;
-        if (!fromPoint) {
-          fromPoint = {lat, lon};
-          fromMark = new YMapMarker({coordinates: [lon, lat]}, mkDot('green'));
-          map.addChild(fromMark);
-          setChip(fromChip, fromPoint);
-        } else if (!toPoint) {
-          toPoint = {lat, lon};
-          toMark = new YMapMarker({coordinates: [lon, lat]}, mkDot('red'));
-          map.addChild(toMark);
-          setChip(toChip, toPoint);
-          saveBtn.disabled = false;
-
-          // Oddiy chiziq (vizual)
-          if (YMapPolyline) {
-            if (routeLine) map.removeChild(routeLine);
-            routeLine = new YMapPolyline({coordinates: [[fromPoint.lon, fromPoint.lat],[toPoint.lon, toPoint.lat]]},
-              { strokeColor: '#1a73e8', strokeWidth: 4, strokeOpacity: 0.9 });
-            map.addChild(routeLine);
-          }
-        }
-      });
-
-      resetBtn.onclick = () => {
-        try { if (fromMark) map.removeChild(fromMark); } catch(_) {}
-        try { if (toMark) map.removeChild(toMark); } catch(_) {}
-        try { if (routeLine) map.removeChild(routeLine); } catch(_) {}
-        fromPoint = toPoint = fromMark = toMark = routeLine = null;
-        setChip(fromChip, null); setChip(toChip, null);
-        saveBtn.disabled = true;
-      };
-
-      saveBtn.onclick = () => {
-        if (!fromPoint || !toPoint) return;
-        const payload = { from: fromPoint, to: toPoint, provider: 'yandex' };
-        try { tg?.sendData(JSON.stringify(payload)); } catch(_) {}
-        try { tg?.close(); } catch(_) {}
-      };
-    }
-
-    init().catch(err => {
-      console.error('Yandex init error:', err);
-      alert('Xaritani yuklab bo‘lmadi. Keyingi urinishda qayta tekshirib ko‘ring.');
-    });
+    // 2) Init + xarita
+    (async () => {
+      try {
+        await ymaps3.ready;
+        const { YMap, YMapDefaultSchemeLayer, YMapDefaultFeaturesLayer } = ymaps3;
+        const map = new YMap(document.getElementById('map'), {
+          location: { center: [69.2401, 41.2995], zoom: 11 } // Toshkent
+        });
+        map.addChild(new YMapDefaultSchemeLayer());
+        map.addChild(new YMapDefaultFeaturesLayer());
+        log('✅ Xarita yaratildi.');
+      } catch (e) {
+        console.error(e);
+        log('❌ Init xatosi:', e && e.message ? e.message : e);
+      }
+    })();
   </script>
 </body>
 </html>
